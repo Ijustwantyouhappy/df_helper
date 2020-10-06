@@ -9,5 +9,5 @@ from df_helper.utils import *
 from df_helper.transform import Cube
 
 
-default_cube = Cube()
-df2dict = default_cube.df2dict
+DEFAULT_CUBE = Cube()
+df2dict = DEFAULT_CUBE.df2dict

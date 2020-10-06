@@ -7,9 +7,10 @@
 """
 Notes:
     1. experiments about nan
-        >>> set([float('nan'), float('nan')])
+        >>> import numpy as np
+        >>> {float('nan'), float('nan')}
         {nan, nan}
-        >>> set([np.nan, np.nan])
+        >>> {np.nan, np.nan}
         {nan}
         >>> df = pd.DataFrame({'a': [np.nan, np.nan, float('nan'), float('nan')]})
         >>> df
@@ -22,21 +23,41 @@ Notes:
         {nan, nan, nan, nan}
         >>> df.a.unique()
         array([nan])
-    2.
+
+    2. df.groupby(keys)，keys中任一列内含有nan，该tuple都不会出现在结果内
+        >>> df = pd.DataFrame({'a': [1, 1, 2, np.nan], 'b': [3, np.nan, 4, 5], 'c': [6, 7, 8, 9]})
+        >>> df
+             a    b  c
+        0  1.0  3.0  6
+        1  1.0  NaN  7
+        2  2.0  4.0  8
+        3  NaN  5.0  9
+        >>> df.groupby(['a', 'b']).size()
+        a    b
+        1.0  3.0    1
+        2.0  4.0    1
+        dtype: int64
+        todo 目前的with_warnings风险提示中尚未考虑这一点
+
+    3.
         1. {key: y, ...} 注意：如果key中有重复项的话，后面的y值会覆盖之前的
         2. {key: set(y), ...} 建议去除y中的NaN后再进行该操作，具体原因详见Notes1
         3. {key: unique(y), ...}
-                当y中不存在NaN时，效果等同于set(y)，但是得到的并不是集合，而是np.array
-                当y中存在NaN时，得到的结果中含有nan
-        4. {key: nunique(y), ...} 效果相当于去除y中nan后，再进行len(set(y))
-        5. {key: count(y), ...} 效果相当于去除y中nan后，再进行len(list())
-        6. {key: f(y), ...} 其中f可以为: max, min, mean, median, sum。效果相当于去除y中nan后，再进行这些运算
+            - 当y中不存在NaN时，效果等同于set(y)，但是得到的并不是集合，而是np.array
+            - 当y中存在NaN时，得到的结果中含有nan
+        4. {key: nunique(y), ...}
+            - 当y中不存在NaN时，效果相当于len(set(y))
+            - 当y中存在NaN时，dropna参数生效
+        5. {key: count(), ...}  统计同一个key出现的频次，如果key中存在NaN，dropna参数生效
+        6. {key: count(y), ...} 统计y中非nan值的数目，和y是有关系的。效果相当于去除y中nan后，再进行len(list())
+        7. {key: f(y), ...} 其中f可以为: max, min, mean, median, sum。效果相当于去除y中nan后，再进行这些运算
         7. {key: len(set(y)), ...} 通常想要的结果是nunique(y)，该操作没什么意义，具体原因详见Notes1
-        8. {key: len(list(y)), ...}
-                通常想要的结果是count(y)，统计y中非nan值的数目，和y是有关系的
-                len(list(y))实际上和y并没有关系，统计的是同一个key重复出现的次数，推荐使用count()
-    3. 关于warnings.warn()的使用有些疑问, 在console中重复运行同一句代码，只有第一次会输出相应警告，后续不再会重复输出。
-       使用logging模块进行替代。
+        8. {key: len(list(y)), ...} 推荐使用count()或者count(y)
+
+    4. todo 关于warnings.warn()的使用有些疑问, 在console中重复运行同一句代码，只有第一次会输出相应警告，后续不再会重复输出。
+       已经使用logging模块进行替代。
+
+    5. todo multi layer部分的代码待梳理，目前并没有和single layer部分的进度统一
 """
 
 import pandas as pd
@@ -47,19 +68,33 @@ from df_helper.utils import gen_logger, flatten_iterable
 
 
 class Cube:
-    """mainly used for transformation between pd.DataFrame and dict"""
+    """
+    mainly used for transformation between pd.DataFrame and dict
+
+    Parameters
+    ----------
+    with_warnings: bool, default = True
+        对数据进行有些操作时可能会存在隐患，检测这些隐患是否存在，若存在则打印警告信息
+
+    store_info: bool, default = True
+        是否存储解释dict结构信息的格式化字符串
+
+    dropna: bool, default = True
+        value_counts, nunique统计函数接受该参数，对于这些函数传入该参数指定的值；其他函数似乎都不接受该参数
+
+    print_codes: bool, default = False
+        打印具体操作使用的代码，以供检查或学习 todo 教学功能，待完善
+
+    Warnings
+    --------
+    1. df中的缺失值建议提前处理好（drop或者填充）。仅当with_warnings参数设置为True且列中存在缺失值时，该框架会进行警示，但不会对其进行处理
+    """
+
     __info_dict = {}
     df2dict_logger = gen_logger('Cube.df2dict')
+    # dict2df_logger = gen_logger('Cube.dict2df')
 
-    def __init__(self, with_warnings=True, store_info=True, dropna=False, print_codes=False):
-        """
-        :param with_warnings: 对数据进行有些操作时可能会存在隐患，默认为True，检测这些隐患是否存在，若存在则屏显警告信息
-        :param store_info: 是否存储解释dict结构信息的格式化字符串
-        :param dropna: 默认为False todo nan对其他统计函数的影响，希望在传入df前事先已经做好了处理
-            False: 1_4中对key的count计数包含key的NaN在内；1_5中对y的nunique计数包含y中的NaN在内
-            True:
-        :param print_codes: todo 教学功能，待完善
-        """
+    def __init__(self, with_warnings=True, store_info=True, dropna=True, print_codes=False):
         self.with_warnings = with_warnings
         self.store_info = store_info
         self.dropna = dropna
@@ -82,8 +117,8 @@ class Cube:
                     1_1:  {key: y, ...}
                     1_2:  {key: {y, ...}, ...} or {key: set(y), ...}
                     1_3:  {key: [y, ...], ...} or {key: list(y), ...}
-                    1_4:  {key: count(), ...}
-                    1_5:  {key: f(y), ...} 其中f可以为: unique, nunique, count, max, min, mean, median, sum
+                    1_4:  {key: count(), ...}, {key: count(y), ...}
+                    1_5:  {key: f(y), ...} 其中f可以为: unique, nunique, max, min, mean, median, sum
                     1_6:  {key: f(...g(y)...), ...}  其中函数嵌套可以为: len(set(y)), len(list(y)), list(set(y))
                 multi-layer dict: 任意多层嵌套
                     multi: {key1: {key2: {key3: y, ...}, ...}, ...}
@@ -157,7 +192,7 @@ class Cube:
                     if func == ['len', 'set']:
                         raise Exception("meaningless, please use nunique(y)")
                     elif func == ['len', 'list']:
-                        raise Exception("meaningless, you might need count(y) or len()")
+                        raise Exception("meaningless, you might need count() or count(y)")
                     elif func == ['list', 'set']:
                         res = _match_1_nested_func_list_set(df, keys, value, with_warnings, print_codes,
                                                             self.df2dict_logger)
@@ -174,7 +209,7 @@ class Cube:
                         res = _match_multi_3(df, keys, value, with_warnings, print_codes, self.df2dict_logger)
                     elif func == 'count':  # multi_4
                         res = _match_multi_4(df, keys, value, with_warnings, print_codes, self.df2dict_logger)
-                    elif func in {'unique', 'nunique', 'count', 'max', 'min', 'median', 'sum', 'mean'}:
+                    elif func in {'unique', 'nunique', 'max', 'min', 'median', 'sum', 'mean'}:
                         res = _match_multi_common(df, keys, value, func, with_warnings, print_codes,
                                                   self.df2dict_logger)
                     else:
@@ -183,7 +218,7 @@ class Cube:
                     if func == ['len', 'set']:
                         raise Exception("meaningless, please use nunique(y)")
                     elif func == ['len', 'list']:
-                        raise Exception("meaningless, you might need count(y) or len()")
+                        raise Exception("meaningless, you might need count() or count(y)")
                     elif func == ['list', 'set']:
                         res = _match_multi_nested_func_list_set(df, keys, value, with_warnings, print_codes)
                     else:
@@ -200,7 +235,7 @@ class Cube:
 
     def dict2df(self, d: dict, format_str=None):
         # todo Generate DataFrame from dict according to specific format.
-        pass
+        raise NotImplementedError
 
     @classmethod
     def get_info(cls, target):
@@ -297,12 +332,12 @@ def _parse_format_str(strs, colon_num, fields):
                     value = tuple(x.strip() for x in value[1: -1].split(','))
                     temp = set(value) - fields
                     if temp:
-                        raise Exception("invalid fileds: {}".format(temp))
+                        raise Exception("invalid fields: {}".format(temp))
                 elif value.startswith('[') and value.endswith(']'):  # {key: [[y1, y2], ...], ...}
                     value = [x.strip() for x in value[1: -1].split(',')]
                     temp = set(value) - fields
                     if temp:
-                        raise Exception("invalid fileds: {}".format(temp))
+                        raise Exception("invalid fields: {}".format(temp))
                 else:
                     raise Exception("can't parse: {}".format(value))
             else:
@@ -316,14 +351,14 @@ def _parse_format_str(strs, colon_num, fields):
                 raise Exception("rewrite {} correctly".format(strs))
             temp = set(value) - fields
             if temp:
-                raise Exception("invalid fileds: {}".format(temp))
+                raise Exception("invalid fields: {}".format(temp))
         elif strs.startswith('[') and strs.endswith(']'):  # {key: [y1, y2], ...}
             value = [x.strip() for x in strs[1: -1].split(',')]
             if len(value) == 1:
                 raise Exception("rewrite {} correctly".format(strs))
             temp = set(value) - fields
             if temp:
-                raise Exception("invalid fileds: {}".format(temp))
+                raise Exception("invalid fields: {}".format(temp))
         else:  # contains func
             if '[' in strs:  # {key: f([y1, y2]), ...}
                 tmp = re.match('(.+)\(\[(.*?)\]\)+$', strs)
@@ -335,7 +370,7 @@ def _parse_format_str(strs, colon_num, fields):
                         raise Exception("please rewrite {} correctly".format(tmp))
                     temp = set(value) - fields
                     if temp:
-                        raise Exception("invalid fileds: {}".format(temp))
+                        raise Exception("invalid fields: {}".format(temp))
                 else:
                     raise Exception("can't parse: {}".format(strs))
             else:
@@ -349,7 +384,7 @@ def _parse_format_str(strs, colon_num, fields):
                             raise Exception("please rewrite {} correctly".format(tmp))
                         temp = set(value) - fields
                         if temp:
-                            raise Exception("invalid fileds: {}".format(temp))
+                            raise Exception("invalid fields: {}".format(temp))
                         func = func[:-1]
                         func = func.strip() if '(' not in func else [x.strip() for x in func.split('(')]
                     else:  # {key: f(y), ...}
@@ -450,54 +485,61 @@ def _match_1_3(df, keys, value, with_warnings, print_codes, logger):
 
 
 def _match_1_4(df, keys, value, dropna, with_warnings, print_codes, logger):
-    if value == '':
+    if value == '':  # count()
         if isinstance(keys, str):  # single column as key
-            # if print_codes:
-            #     codes_str = "df['{}'].value_counts().to_dict()".format(keys)
-            #     print("codes_str:", codes_str)
             res = df[keys].value_counts(dropna=dropna).to_dict()
+            if with_warnings and df[keys].isna().any():
+                if dropna:
+                    logger.warning(f"column '{keys}' exists NaN, dropna={dropna}, doesn't contain number of NaNs")
+                else:
+                    logger.warning(f"column '{keys}' exists NaN, dropna={dropna}, contains number of NaNs")
+            if print_codes:
+                codes_str = f"df['{keys}'].value_counts(dropna={dropna}).to_dict()"
+                print(f"codes_str: {codes_str}")
         else:  # tuple, multi columns as key
-            # if print_codes:  # todo
-            #     codes_str = "dict(Counter(zip(*{})))".format(', '.join(["df['{}']".format(k) for k in keys]))
-            #     print("codes_str:", codes_str)
+            keys = list(keys)
+            res = df.groupby(keys).size().to_dict()
             # res = dict(Counter(zip(*[df[k] for k in keys])))  # slow method
-            res = df.groupby(list(keys)).size().to_dict()
-    else:
+            if print_codes:
+                codes_str = f"df.groupby({keys}).size().to_dict()"
+                # codes_str = "dict(Counter(zip(*{})))".format(', '.join(["df['{}']".format(k) for k in keys]))
+                print(f"codes_str: {codes_str}")
+
+    else:  # count(y)
         keys = [keys] if isinstance(keys, str) else list(keys)
+        res = df.groupby(keys)[value].count().to_dict()
         if with_warnings and df[value].isnull().any():
             logger.warning("column '{}' exists NaN, count doesn't contain number of NaNs in this column.".format(value))
-        res = df.groupby(keys)[value].count().to_dict()
 
     return res
 
 
 def _match_1_common(df, keys, value, func, dropna, with_warnings, print_codes, logger):
-    # todo groupby 也许并非最快
-    keys = [keys] if isinstance(keys, str) else list(keys)
-    if print_codes:
-        codes_str = "df.groupby({})['{}'].{}().to_dict()".format(keys, value, func)
-        print("codes_str:", codes_str)
+    # todo groupby 也许不是最快的
+    keys = [keys] if isinstance(keys, str) else list(keys)  # for print_codes
     #
-    if func == 'unique':
+    if func in {'min', 'max', 'median', 'sum', 'mean', 'unique'}:
+        res = getattr(df.groupby(keys)[value], func)().to_dict()
         if with_warnings and df[value].isnull().any():
-            logger.warning("column '{}' exists NaN, please drop or fill it".format(value))
-        res = df.groupby(keys)[value].unique().to_dict()
+            if func == 'mean':
+                logger.warning(f"column '{value}' exists NaN, mean=sum/count, (count doesn't contain number of NaNs)")
+            elif func == 'unique':
+                logger.warning(f"column '{value}' exists NaN, please drop or fill it")
+        if print_codes:
+            codes_str = f"df.groupby({keys})['{value}'].{func}().to_dict()"
+            print(f"codes_str: {codes_str}")
     elif func == 'nunique':
         res = df.groupby(keys)[value].nunique(dropna=dropna).to_dict()
-    elif func == "max":
-        res = df.groupby(keys)[value].max().to_dict()
-    elif func == "min":
-        res = df.groupby(keys)[value].min().to_dict()
-    elif func == "median":
-        res = df.groupby(keys)[value].median().to_dict()
-    elif func == "sum":
-        res = df.groupby(keys)[value].sum().to_dict()
-    elif func == "mean":
         if with_warnings and df[value].isnull().any():
-            logger.warning("column '{}' exists NaN, mean = sum/count, count doesn't contain number of NaNs".format(value))
-        res = df.groupby(keys)[value].mean().to_dict()
+            if dropna:
+                logger.warning(f"column '{value}' exists NaN, dropna={dropna}, doesn't contain number of NaNs")
+            else:
+                logger.warning(f"column '{value}' exists NaN, dropna={dropna}, contains number of NaNs")
+        if print_codes:
+            codes_str = f"df.groupby({keys})['{value}'].{func}(dropna={dropna}).to_dict()"
+            print(f"codes_str: {codes_str}")
     else:
-        raise Exception("new func: {}, can't handle this now".format(func))
+        raise Exception(f"new func: {func}, can't handle this now")
 
     return res
 
@@ -599,10 +641,10 @@ def _match_multi_common(df, keys, value, func, with_warnings, print_codes, logge
         if with_warnings and df[value].isnull().any():
             logger.warning("column '{}' exists NaN, nunique doesn't contain number of NaNs".format(value))
         df = df.groupby(flatten_iterable(keys))[value].nunique().reset_index()
-    elif func == 'count':
-        if with_warnings and df[value].isnull().any():
-            logger.warning("column '{}' exists NaN, count doesn't contain number of NaNs".format(value))
-        df = df.groupby(flatten_iterable(keys))[value].count().reset_index()
+    # elif func == 'count':
+    #     if with_warnings and df[value].isnull().any():
+    #         logger.warning("column '{}' exists NaN, count doesn't contain number of NaNs".format(value))
+    #     df = df.groupby(flatten_iterable(keys))[value].count().reset_index()
     elif func == "max":
         df = df.groupby(flatten_iterable(keys))[value].max().reset_index()
     elif func == "min":
