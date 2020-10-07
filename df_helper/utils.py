@@ -205,7 +205,7 @@ def gen_ts_df():
 
     res_df = pd.merge(basic_info_df, sku_qty_df)
     res_df['amount'] = res_df['qty'] * res_df['price']
-
+    print(res_df.head(2))
     return res_df
 
 
